@@ -74,7 +74,7 @@ const metaTransactionType = [
 const commitment = {
   _activityKey:
     "0x7c811a21b2f664032d44e98853a7045b8e6b13994831bf3b1d0a63ca27960b4c",
-  _depositAmount: "1",
+  _depositAmount: 1,
   _endTime: 1617919200,
   _goalValue: 100,
   _stake: 1,
@@ -82,11 +82,10 @@ const commitment = {
   _userId: "45977566",
 };
 
-let torus;
+let torus, biconomy, ethersProvider;
 let salt = 42;
 let walletProvider, walletSigner;
 let contract, contractInterface;
-let biconomy;
 
 const useStyles = makeStyles((theme) => ({
   root: {
@@ -126,7 +125,7 @@ function App() {
         window.ethereum.isMetaMask
       ) {
         // Ethereum user detected. You can now use the provider.
-        //Torus is the provider used for signing the transaction
+        //Torus is the provider used for getting the account and signing the transaction
         torus = new Torus({
           buttonPosition: "bottom-left",
         });
@@ -140,17 +139,21 @@ function App() {
             networkName: "Mumbai Test Network",
           },
           showTorusButton: true,
+          // integrity: {
+          //   check: false,
+          //   version: "1.9.15",
+          // },
         });
 
         await torus.login().then((account) => setSelectedAddress(account[0]));
         console.log("Torus: ", torus);
 
-        //This set of providers is userd for communicating with the network
+        //The Biconomy provider is used for communicating with the network
         let jsonRpcProvider = new ethers.providers.JsonRpcProvider(
-          "https://rpc-mumbai.matic.today"
+          config.contract.rpcUrl
         );
 
-        biconomy = new Biconomy(jsonRpcProvider, {
+        biconomy = new Biconomy(torus.ethereum, {
           walletProvider: torus.provider,
           apiKey: "V7nbIe8Ue.94e3d8fd-2f0d-42cc-96aa-27d57dac9a7c",
           debug: true,
@@ -158,6 +161,8 @@ function App() {
 
         console.log("Biconomy: ", biconomy);
 
+        // Assign the provider and signer based on Torus
+        ethersProvider = new ethers.providers.Web3Provider(biconomy);
         walletProvider = new ethers.providers.Web3Provider(torus.provider);
         walletSigner = walletProvider.getSigner();
         // This web3 instance is used to read normally and write to contract via meta transactions.
@@ -178,8 +183,9 @@ function App() {
             contractInterface = new ethers.utils.Interface(config.contract.abi);
           })
           .onEvent(biconomy.ERROR, (error, message) => {
-            console.log("ERROR: ", error);
             // Handle error while initializing mexa
+            console.log("ERROR: ", error);
+            console.log("MESSAGE: ", message);
           });
       } else {
         showErrorMessage("Metamask not installed");
@@ -195,10 +201,11 @@ function App() {
       if (metaTxEnabled) {
         console.log("Sending meta transaction");
         console.log("SelectedAddress: ", selectedAddress);
-        let userAddress = selectedAddress;
-        let nonce = await contract.getNonce(userAddress);
+        const userAddress = selectedAddress;
+        const nonce = await contract.getNonce(userAddress);
 
-        let functionSignature = contractInterface.encodeFunctionData(
+        console.log(`Got nonce: ${nonce.toString()}`);
+        const functionSignature = contractInterface.encodeFunctionData(
           "depositAndCommit",
           [
             commitment._activityKey,
@@ -211,10 +218,11 @@ function App() {
           ]
         );
 
-        let message = {};
-        message.nonce = parseInt(nonce);
-        message.from = userAddress;
-        message.functionSignature = functionSignature;
+        const message = {
+          nonce: parseInt(nonce),
+          from: userAddress,
+          functionSignature: functionSignature,
+        };
 
         const dataToSign = JSON.stringify({
           types: {
@@ -228,7 +236,7 @@ function App() {
 
         console.log(commitment);
         console.log("Trying to sign and send");
-        await torus.provider.sendAsync(
+        await torus.provider.send(
           {
             jsonrpc: "2.0",
             id: 999999999999,
@@ -240,10 +248,10 @@ function App() {
             if (error || (response && response.error)) {
               showErrorMessage("Could not get user signature");
             } else if (response && response.result) {
-              let { r, s, v } = getSignatureParameters(response.result);
+              const { r, s, v } = getSignatureParameters(response.result);
               console.log(userAddress);
               console.log(JSON.stringify(dataToSign));
-              console.log(message)
+              console.log(message);
               console.log(getSignatureParameters(response.result));
 
               const recovered = sigUtil.recoverTypedSignature_v4({
@@ -290,7 +298,7 @@ function App() {
       //   .estimateGas({ from: userAddress });
       // let gasPrice = await ethersProvider.getGasPrice();
 
-      let overrides = {
+      const overrides = {
         from: userAddress,
         gasLimit: 350000,
       };
@@ -303,12 +311,13 @@ function App() {
       //   v, overrides
       // );
 
-      let tx = await contract.executeMetaTransaction(
+      const tx = await contract.executeMetaTransaction(
         userAddress,
         functionData,
         r,
         s,
-        v, overrides
+        v,
+        overrides
       );
 
       showInfoMessage(`Transaction sent. Waiting for confirmation ..`);
